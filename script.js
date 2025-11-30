@@ -1,6 +1,6 @@
 // --- CONFIGURAZIONE ---
 
-// IL TUO LINK (Non toccarlo, lo script lo gestisce in automatico)
+// LINK ONEDRIVE (Non toccare)
 const USER_LINK = "https://1drv.ms/x/c/ac1a912c65f087d9/IQSCrL3EW_MNQJi_FLvY8KNJAXXS-7KsHuornWAqYgAoNnE";
 
 // --- ELEMENTI DOM ---
@@ -31,7 +31,7 @@ function resetApp() {
     imgResult.src = "";
 }
 
-// Funzione helper per tentare il download
+// Funzione helper per il download
 async function tryFetch(url, proxyName) {
     try {
         console.log(`Tentativo con ${proxyName}:`, url);
@@ -41,9 +41,8 @@ async function tryFetch(url, proxyName) {
         
         const arrayBuffer = await response.arrayBuffer();
         
-        // Verifica se abbiamo scaricato HTML (errore) invece di un file binario
         const firstByte = new Uint8Array(arrayBuffer)[0];
-        if (firstByte === 60) throw new Error("Ricevuto HTML (pagina web) invece del file Excel"); 
+        if (firstByte === 60) throw new Error("Ricevuto HTML invece di Excel"); 
         
         return arrayBuffer;
     } catch (e) {
@@ -53,70 +52,63 @@ async function tryFetch(url, proxyName) {
 }
 
 async function eseguiRicerca() {
+    // PULIZIA INPUT UTENTE: Rimuove spazi prima e dopo
     const rawCode = inputCodice.value.trim();
     if (!rawCode) return; 
 
+    // Normalizza tutto in maiuscolo per il confronto
     const searchCode = rawCode.toUpperCase(); 
     loadingOverlay.classList.remove('hidden');
 
     try {
-        // 1. TRASFORMAZIONE CHIRURGICA DEL LINK
-        // Trasformiamo: https://1drv.ms/x/c/... -> https://1drv.ms/download/c/...
-        // Questo è il metodo più sicuro per i nuovi link "Streamline" di OneDrive.
-        let directLink = USER_LINK.replace('/x/', '/download/');
-        directLink = directLink.split('?')[0]; // Rimuove parametri sporchi
-
+        let directLink = USER_LINK.replace('/x/', '/download/').split('?')[0];
         let excelData = null;
         const timestamp = new Date().getTime();
 
-        // --- STRATEGIA A CASCATA (3 Tentativi) ---
-
-        // TENTATIVO 1: CodeTabs (Molto affidabile per file Excel)
+        // 1. CodeTabs
         if (!excelData) {
             const url1 = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(directLink)}&t=${timestamp}`;
             excelData = await tryFetch(url1, "CodeTabs");
         }
 
-        // TENTATIVO 2: CorsProxy.io (Veloce, ma a volte bloccato su mobile)
+        // 2. CorsProxy
         if (!excelData) {
             const url2 = `https://corsproxy.io/?${encodeURIComponent(directLink)}&t=${timestamp}`;
             excelData = await tryFetch(url2, "CorsProxy");
         }
 
-        // TENTATIVO 3: AllOrigins (Lento ma spesso passa ovunque)
+        // 3. AllOrigins
         if (!excelData) {
             const url3 = `https://api.allorigins.win/raw?url=${encodeURIComponent(directLink)}&t=${timestamp}`;
             excelData = await tryFetch(url3, "AllOrigins");
         }
 
-        // Se tutti falliscono
-        if (!excelData) {
-            throw new Error("Tutti i tentativi di connessione sono falliti. Il firewall della rete mobile potrebbe bloccare i download.");
-        }
+        if (!excelData) throw new Error("Connessione instabile. Riprova.");
 
-        // 2. ELABORAZIONE FILE
+        // LETTURA EXCEL
         const workbook = XLSX.read(excelData, { type: 'array' });
         
-        if (!workbook.SheetNames.length) throw new Error("File Excel vuoto o illeggibile.");
-        
+        // Cerca il primo foglio che ha dati
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
+        
+        // Converte in JSON grezzo
         const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
 
-        // Ritardo estetico per l'animazione
+        // Ritardo animazione
         setTimeout(() => {
             elaboraDati(jsonData, searchCode);
             loadingOverlay.classList.add('hidden');
         }, 3500); 
 
     } catch (error) {
-        console.error("ERRORE CRITICO:", error);
+        console.error("ERRORE:", error);
         loadingOverlay.classList.add('hidden');
-        alert("Errore: " + error.message + "\n\nProva a disattivare il Wi-Fi e usare solo dati, o viceversa.");
+        alert("Errore: " + error.message);
     }
 }
 
-function elaboraDati(data, code) {
+function elaboraDati(data, searchCode) {
     errCodice.classList.add('hidden');
     errImmagine.classList.add('hidden');
     phRisultati.classList.add('hidden');
@@ -125,18 +117,27 @@ function elaboraDati(data, code) {
 
     let recordTrovato = null;
 
+    // --- RICERCA INTELLIGENTE ---
+    // Scorre tutte le righe del file Excel
     for (let row of data) {
-        let rowCode = "";
-        if (row['Codice']) rowCode = row['Codice'];
-        else if (row['codice']) rowCode = row['codice'];
-        else rowCode = Object.values(row)[0]; 
+        // Controlla ogni valore dentro la riga (non solo la colonna 'Codice')
+        // Questo risolve il problema se la colonna ha un nome diverso
+        const values = Object.values(row);
         
-        if (String(rowCode).toUpperCase() === code) {
-            recordTrovato = row;
-            break;
+        for (let val of values) {
+            // Pulisce il valore Excel da spazi e lo mette maiuscolo
+            let valClean = String(val).trim().toUpperCase();
+            
+            // Confronto esatto
+            if (valClean === searchCode) {
+                recordTrovato = row;
+                break; // Trovato! Esce dal ciclo interno
+            }
         }
+        if (recordTrovato) break; // Trovato! Esce dal ciclo delle righe
     }
 
+    // --- SE NON TROVATO ---
     if (!recordTrovato) {
         listaDati.classList.add('hidden');
         errCodice.classList.remove('hidden');
@@ -145,21 +146,30 @@ function elaboraDati(data, code) {
         return;
     }
 
+    // --- SE TROVATO ---
     listaDati.classList.remove('hidden');
 
     const keys = Object.keys(recordTrovato);
     let imageLinkFound = "";
 
     keys.forEach(key => {
-        const val = recordTrovato[key];
+        let val = recordTrovato[key];
+        // Pulisce anche il valore da visualizzare se è una stringa
+        if (typeof val === 'string') val = val.trim();
+
         const keyLower = key.toLowerCase();
 
+        // Cerca link immagine
         if (keyLower.includes('immagine') || keyLower.includes('link') || keyLower.includes('foto') || keyLower.includes('url')) {
             imageLinkFound = val; 
             return;
         }
 
-        if (keyLower !== 'codice' && val !== "" && val !== undefined) {
+        // Escludiamo la colonna che contiene il codice stesso per non ripeterlo
+        // e i valori vuoti
+        let isCodeColumn = String(val).toUpperCase() === searchCode;
+        
+        if (!isCodeColumn && val !== "" && val !== undefined) {
             const div = document.createElement('div');
             div.className = 'data-item';
             div.innerText = `- ${key}: ${val}`;
@@ -167,6 +177,7 @@ function elaboraDati(data, code) {
         }
     });
 
+    // Gestione Immagine
     if (imageLinkFound && String(imageLinkFound).trim() !== "") {
         let imgUrl = String(imageLinkFound);
         if (imgUrl.includes("drive.google.com")) {
