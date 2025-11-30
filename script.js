@@ -1,6 +1,4 @@
 // --- CONFIGURAZIONE ---
-
-// LINK ONEDRIVE (Non toccare)
 const USER_LINK = "https://1drv.ms/x/c/ac1a912c65f087d9/IQSCrL3EW_MNQJi_FLvY8KNJAXXS-7KsHuornWAqYgAoNnE";
 
 // --- ELEMENTI DOM ---
@@ -31,33 +29,29 @@ function resetApp() {
     imgResult.src = "";
 }
 
-// Funzione helper per il download
 async function tryFetch(url, proxyName) {
     try {
-        console.log(`Tentativo con ${proxyName}:`, url);
+        console.log(`Tentativo ${proxyName}:`, url);
         const response = await fetch(url, { method: 'GET', cache: 'no-store' });
-        
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        
         const arrayBuffer = await response.arrayBuffer();
-        
         const firstByte = new Uint8Array(arrayBuffer)[0];
         if (firstByte === 60) throw new Error("Ricevuto HTML invece di Excel"); 
-        
         return arrayBuffer;
     } catch (e) {
-        console.warn(`${proxyName} fallito:`, e.message);
+        console.warn(`${proxyName} errore:`, e.message);
         return null;
     }
 }
 
 async function eseguiRicerca() {
-    // PULIZIA INPUT UTENTE: Rimuove spazi prima e dopo
     const rawCode = inputCodice.value.trim();
     if (!rawCode) return; 
 
-    // Normalizza tutto in maiuscolo per il confronto
-    const searchCode = rawCode.toUpperCase(); 
+    // Normalizziamo il codice cercato (rimuoviamo spazi e tutto maiuscolo)
+    // Sostituiamo anche eventuali spazi interni per sicurezza
+    const searchCode = rawCode.replace(/\s+/g, '').toUpperCase(); 
+    
     loadingOverlay.classList.remove('hidden');
 
     try {
@@ -65,117 +59,128 @@ async function eseguiRicerca() {
         let excelData = null;
         const timestamp = new Date().getTime();
 
-        // 1. CodeTabs
-        if (!excelData) {
-            const url1 = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(directLink)}&t=${timestamp}`;
-            excelData = await tryFetch(url1, "CodeTabs");
-        }
+        // TENTATIVI DOWNLOAD
+        if (!excelData) excelData = await tryFetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(directLink)}&t=${timestamp}`, "CodeTabs");
+        if (!excelData) excelData = await tryFetch(`https://corsproxy.io/?${encodeURIComponent(directLink)}&t=${timestamp}`, "CorsProxy");
+        if (!excelData) excelData = await tryFetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(directLink)}&t=${timestamp}`, "AllOrigins");
 
-        // 2. CorsProxy
-        if (!excelData) {
-            const url2 = `https://corsproxy.io/?${encodeURIComponent(directLink)}&t=${timestamp}`;
-            excelData = await tryFetch(url2, "CorsProxy");
-        }
+        if (!excelData) throw new Error("Connessione fallita. Riprova.");
 
-        // 3. AllOrigins
-        if (!excelData) {
-            const url3 = `https://api.allorigins.win/raw?url=${encodeURIComponent(directLink)}&t=${timestamp}`;
-            excelData = await tryFetch(url3, "AllOrigins");
-        }
-
-        if (!excelData) throw new Error("Connessione instabile. Riprova.");
-
-        // LETTURA EXCEL
+        // LETTURA EXCEL AVANZATA
         const workbook = XLSX.read(excelData, { type: 'array' });
-        
-        // Cerca il primo foglio che ha dati
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
         
-        // Converte in JSON grezzo
-        const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+        // Convertiamo usando 'header: 1' per ottenere una matrice grezza (Array di Array)
+        // Questo evita problemi se le intestazioni non sono nella riga 1
+        const jsonMatrix = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" });
 
-        // Ritardo animazione
+        // Ritardo estetico
         setTimeout(() => {
-            elaboraDati(jsonData, searchCode);
+            elaboraDatiMatrice(jsonMatrix, searchCode);
             loadingOverlay.classList.add('hidden');
-        }, 3500); 
+        }, 3000); 
 
     } catch (error) {
-        console.error("ERRORE:", error);
         loadingOverlay.classList.add('hidden');
-        alert("Errore: " + error.message);
+        alert("Errore tecnico: " + error.message);
     }
 }
 
-function elaboraDati(data, searchCode) {
+function elaboraDatiMatrice(matrix, searchCode) {
     errCodice.classList.add('hidden');
     errImmagine.classList.add('hidden');
     phRisultati.classList.add('hidden');
     phImmagine.classList.add('hidden');
     listaDati.innerHTML = "";
 
+    let headers = [];
     let recordTrovato = null;
+    let headerRowIndex = -1;
 
-    // --- RICERCA INTELLIGENTE ---
-    // Scorre tutte le righe del file Excel
-    for (let row of data) {
-        // Controlla ogni valore dentro la riga (non solo la colonna 'Codice')
-        // Questo risolve il problema se la colonna ha un nome diverso
-        const values = Object.values(row);
+    // 1. CERCA LA RIGA DELLE INTESTAZIONI E IL DATO
+    // Scansioniamo tutta la matrice per trovare dove sono i dati
+    for (let i = 0; i < matrix.length; i++) {
+        const row = matrix[i];
         
-        for (let val of values) {
-            // Pulisce il valore Excel da spazi e lo mette maiuscolo
-            let valClean = String(val).trim().toUpperCase();
+        // Controlliamo se in questa riga c'è il codice cercato
+        for (let j = 0; j < row.length; j++) {
+            let cellVal = String(row[j]).replace(/\s+/g, '').toUpperCase(); // Pulisce cella
             
-            // Confronto esatto
-            if (valClean === searchCode) {
+            if (cellVal === searchCode) {
                 recordTrovato = row;
-                break; // Trovato! Esce dal ciclo interno
+                
+                // Se abbiamo trovato il dato, cerchiamo di capire dove sono le intestazioni.
+                // Assumiamo che le intestazioni siano nella riga PRECEDENTE (i-1) o la PRIMA riga (0)
+                // Se siamo alla riga 0, non ci sono intestazioni sopra, quindi usiamo indici generici.
+                if (i > 0) {
+                    headers = matrix[0]; // Proviamo a prendere la riga 0 come intestazioni standard
+                } else {
+                    headers = row.map((_, idx) => `Colonna ${idx + 1}`); // Intestazioni fittizie
+                }
+                break;
             }
         }
-        if (recordTrovato) break; // Trovato! Esce dal ciclo delle righe
+        if (recordTrovato) break;
     }
 
-    // --- SE NON TROVATO ---
+    // --- DEBUGGING FONDAMENTALE ---
+    // Se non troviamo nulla, mostriamo all'utente cosa ha letto l'app
     if (!recordTrovato) {
         listaDati.classList.add('hidden');
         errCodice.classList.remove('hidden');
         imgResult.classList.add('hidden');
         errImmagine.classList.remove('hidden');
+
+        // Creiamo un messaggio di debug per capire cosa sta succedendo
+        let debugMsg = "DIAGNOSTICA (Fai uno screenshot):\n";
+        debugMsg += `Ho scaricato ${matrix.length} righe.\n`;
+        debugMsg += `Codice cercato: "${searchCode}"\n`;
+        
+        if (matrix.length > 0) {
+            // Mostra il contenuto delle prime 3 righe per capire la struttura
+            let firstRows = matrix.slice(0, 3).map(r => JSON.stringify(r)).join("\n");
+            debugMsg += `\nPrime righe lette dal file:\n${firstRows}`;
+        } else {
+            debugMsg += "\nIl file sembra vuoto!";
+        }
+        
+        alert(debugMsg);
         return;
     }
 
-    // --- SE TROVATO ---
+    // --- MOSTRA I DATI TROVATI ---
     listaDati.classList.remove('hidden');
 
-    const keys = Object.keys(recordTrovato);
     let imageLinkFound = "";
 
-    keys.forEach(key => {
-        let val = recordTrovato[key];
-        // Pulisce anche il valore da visualizzare se è una stringa
-        if (typeof val === 'string') val = val.trim();
+    // Mappa headers con valori
+    // Se headers è vuoto o più corto della riga, gestiamo l'errore
+    const maxLen = Math.max(headers.length, recordTrovato.length);
 
-        const keyLower = key.toLowerCase();
+    for (let k = 0; k < maxLen; k++) {
+        let key = headers[k] || `Colonna ${k+1}`; // Nome colonna
+        let val = recordTrovato[k];              // Valore cella
 
-        // Cerca link immagine
-        if (keyLower.includes('immagine') || keyLower.includes('link') || keyLower.includes('foto') || keyLower.includes('url')) {
-            imageLinkFound = val; 
-            return;
+        if (val === undefined || val === null || String(val).trim() === "") continue;
+
+        let keyClean = String(key).toLowerCase();
+        let valClean = String(val).replace(/\s+/g, '').toUpperCase();
+
+        // Salta la cella che contiene il codice stesso
+        if (valClean === searchCode) continue;
+
+        // Cerca Immagine
+        if (keyClean.includes('immagine') || keyClean.includes('link') || keyClean.includes('foto') || keyClean.includes('url')) {
+            imageLinkFound = val;
+            continue;
         }
 
-        // Escludiamo la colonna che contiene il codice stesso per non ripeterlo
-        // e i valori vuoti
-        let isCodeColumn = String(val).toUpperCase() === searchCode;
-        
-        if (!isCodeColumn && val !== "" && val !== undefined) {
-            const div = document.createElement('div');
-            div.className = 'data-item';
-            div.innerText = `- ${key}: ${val}`;
-            listaDati.appendChild(div);
-        }
-    });
+        const div = document.createElement('div');
+        div.className = 'data-item';
+        div.innerText = `- ${key}: ${val}`;
+        listaDati.appendChild(div);
+    }
 
     // Gestione Immagine
     if (imageLinkFound && String(imageLinkFound).trim() !== "") {
