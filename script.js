@@ -74,7 +74,6 @@ async function eseguiRicerca() {
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
         
-        // Converte in matrice (array di array)
         const matrix = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" });
 
         if (!matrix || matrix.length === 0) throw new Error("File Excel vuoto.");
@@ -102,14 +101,13 @@ function elaboraDati(matrix, searchCode) {
     let recordTrovato = null;
     let headers = [];
 
-    // 1. CERCA IL CODICE NELLE RIGHE
+    // 1. CERCA IL CODICE
     for (let i = 0; i < matrix.length; i++) {
         const row = matrix[i];
         for (let j = 0; j < row.length; j++) {
             let cell = String(row[j]).toUpperCase().replace(/\s+/g, '');
             if (cell === searchCode) {
                 recordTrovato = row;
-                // Intestazioni: se siamo alla riga i, prendiamo la prima riga (0)
                 if (i > 0) headers = matrix[0]; 
                 else headers = row.map((_, idx) => `Dato ${idx + 1}`);
                 break;
@@ -126,14 +124,14 @@ function elaboraDati(matrix, searchCode) {
         return;
     }
 
-    // 2. MOSTRA DATI E CERCA FOTO
+    // 2. ELABORA I DATI
     listaDati.classList.remove('hidden');
     let imageLinkFound = "";
     
     const maxLen = Math.max(headers.length, recordTrovato.length);
 
     for (let k = 0; k < maxLen; k++) {
-        let key = String(headers[k] || `Colonna ${k+1}`).trim();
+        let key = String(headers[k] || "").trim();
         let val = recordTrovato[k];
 
         if (!val || String(val).trim() === "") continue;
@@ -141,29 +139,32 @@ function elaboraDati(matrix, searchCode) {
         let keyLower = key.toLowerCase();
         let valString = String(val);
 
-        // --- RILEVAMENTO FOTO ---
-        // Controlla se il titolo contiene "FOTO", "IMMAGINE" oppure se il valore è un link Drive
-        let isImageHeader = keyLower.includes('foto') || keyLower.includes('immagine');
+        // --- STEP A: CONTROLLO IMMAGINE (Priorità Assoluta) ---
+        // Se è l'immagine, la salviamo e saltiamo al prossimo giro (così non viene scritta nel testo)
+        // Controllo: Titolo contiene FOTO/IMMAGINE/LINK oppure il Valore è un link Drive
+        let isImageHeader = keyLower.includes('foto') || keyLower.includes('immagine') || keyLower.includes('link');
         let isDriveLink = valString.includes('drive.google.com') || valString.includes('docs.google.com');
 
-        if (isImageHeader || (isDriveLink && valString.length > 20)) {
+        if (isImageHeader || isDriveLink) {
             imageLinkFound = valString;
-            continue; // È una foto, non mostrarla come testo
+            continue; // Stop, passa alla prossima colonna
         }
 
-        // --- FILTRO ASTERISCO (*) ---
-        // Se il titolo NON inizia con *, SALTALO (Nasconde "altri", "fuffa", ecc.)
+        // --- STEP B: FILTRO ASTERISCO ---
+        // Se il titolo NON inizia con *, lo ignoriamo (nascondiamo "altri", "fuffa")
         if (!key.startsWith('*')) {
-            continue; 
+            continue; // Stop, nascondi questa colonna
         }
 
-        // Pulisce asterisco per visualizzazione
+        // --- STEP C: PULIZIA ESTETICA ---
+        // Togliamo l'asterisco per la visualizzazione ("*Pezzi" -> "Pezzi")
         let displayKey = key.replace('*', '').trim();
 
-        // Non mostrare il codice stesso
+        // Evitiamo di riscrivere il codice cercato
         let valClean = valString.toUpperCase().replace(/\s+/g, '');
         if (valClean === searchCode) continue;
 
+        // --- STEP D: STAMPA A VIDEO ---
         const div = document.createElement('div');
         div.className = 'data-item';
         div.innerText = `- ${displayKey}: ${val}`;
@@ -174,9 +175,7 @@ function elaboraDati(matrix, searchCode) {
     if (imageLinkFound) {
         let imgUrl = imageLinkFound;
         
-        // CONVERSIONE LINK DRIVE PER IMMAGINI
-        // Trasforma: https://drive.google.com/file/d/XXX/view...
-        // In:        https://drive.google.com/uc?export=view&id=XXX
+        // Fix Link Google Drive
         if (imgUrl.includes("/d/")) {
             let idMatch = imgUrl.match(/\/d\/(.*?)\//);
             if (idMatch) {
@@ -185,13 +184,13 @@ function elaboraDati(matrix, searchCode) {
             }
         }
 
-        console.log("Tentativo caricamento immagine:", imgUrl); // Debug in console
+        console.log("Carico immagine:", imgUrl);
 
         imgResult.src = imgUrl;
         imgResult.classList.remove('hidden');
         
         imgResult.onerror = () => {
-            console.warn("Errore caricamento img:", imgUrl);
+            console.warn("Impossibile caricare:", imgUrl);
             imgResult.classList.add('hidden');
             errImmagine.classList.remove('hidden');
         };
