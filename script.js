@@ -1,6 +1,6 @@
 // --- CONFIGURAZIONE ---
 
-// ID del tuo file Google Drive (estratto dal link che mi hai dato)
+// ID del file Google Drive (estratto dal tuo link)
 const FILE_ID = "1MUxjFGP4l3tHTckFkW1DA5QaUJwex4xx";
 
 // --- ELEMENTI DOM ---
@@ -31,58 +31,87 @@ function resetApp() {
     imgResult.src = "";
 }
 
+// Funzione che tenta di scaricare usando diversi proxy in sequenza
+async function scaricaConFallback(googleUrl) {
+    const timestamp = new Date().getTime();
+    
+    // Lista di "Ponti" (Proxy) da provare in ordine
+    const proxies = [
+        // 1. CorsProxy.io (Veloce e stabile)
+        `https://corsproxy.io/?${encodeURIComponent(googleUrl)}&t=${timestamp}`,
+        // 2. CodeTabs (Ottimo per i redirect)
+        `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(googleUrl)}&t=${timestamp}`,
+        // 3. AllOrigins (Backup finale)
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(googleUrl)}&t=${timestamp}`
+    ];
+
+    let lastError = null;
+
+    // Prova i proxy uno alla volta
+    for (let proxyUrl of proxies) {
+        try {
+            console.log("Tentativo download con:", proxyUrl);
+            const response = await fetch(proxyUrl, { method: 'GET', cache: 'no-store' });
+            
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            
+            const arrayBuffer = await response.arrayBuffer();
+            
+            // Verifica che non sia una pagina di errore HTML
+            const firstByte = new Uint8Array(arrayBuffer)[0];
+            if (firstByte === 60) { // 60 = '<'
+                throw new Error("Ricevuto HTML invece di Excel");
+            }
+            
+            return arrayBuffer; // Successo! Usciamo dal ciclo e restituiamo il file
+            
+        } catch (e) {
+            console.warn("Proxy fallito, provo il prossimo...", e);
+            lastError = e;
+            // Continua col prossimo proxy nel ciclo
+        }
+    }
+    
+    // Se siamo qui, tutti i proxy hanno fallito
+    throw lastError || new Error("Tutti i tentativi di connessione sono falliti.");
+}
+
 async function eseguiRicerca() {
     const rawCode = inputCodice.value.trim();
     if (!rawCode) return; 
 
-    // Pulisce il codice (toglie spazi e mette maiuscolo)
     const searchCode = rawCode.replace(/\s+/g, '').toUpperCase(); 
     loadingOverlay.classList.remove('hidden');
 
     try {
-        // 1. COSTRUZIONE LINK EXPORT
-        // Questo link dice a Google: "Dammi il file ID in formato Excel (.xlsx)"
-        let exportUrl = `https://docs.google.com/spreadsheets/d/${FILE_ID}/export?format=xlsx`;
-        
-        // Aggiungiamo un numero casuale per evitare che il telefono usi la memoria vecchia (cache)
-        exportUrl += "&t=" + new Date().getTime();
+        // Costruiamo il link diretto per l'export in Excel da Google Drive
+        const exportUrl = `https://docs.google.com/spreadsheets/d/${FILE_ID}/export?format=xlsx`;
 
-        // 2. DOWNLOAD TRAMITE PROXY (AllOrigins)
-        // Usiamo questo ponte per evitare che il browser blocchi il download per sicurezza
-        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(exportUrl)}`;
-        
-        console.log("Scaricando da:", proxyUrl);
+        // Avviamo il download con la strategia "Carro Armato" (prova più strade)
+        const arrayBuffer = await scaricaConFallback(exportUrl);
 
-        const response = await fetch(proxyUrl, { method: 'GET', cache: 'no-store' });
-        
-        if (!response.ok) throw new Error("Errore connessione: " + response.status);
+        if (!arrayBuffer) throw new Error("Impossibile scaricare il file.");
 
-        const arrayBuffer = await response.arrayBuffer();
-
-        // Controllo se il file è valido (se inizia con '<' è una pagina web di errore/login)
-        const firstByte = new Uint8Array(arrayBuffer)[0];
-        if (firstByte === 60) throw new Error("Accesso negato. Assicurati che il file su Drive sia 'Chiunque abbia il link'.");
-
-        // 3. LETTURA EXCEL
+        // LETTURA EXCEL
         const workbook = XLSX.read(arrayBuffer, { type: 'array' });
-        const sheetName = workbook.SheetNames[0]; // Prende il primo foglio
+        const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
         
-        // Converte in matrice (Tutti i dati grezzi)
+        // Converte in matrice dati
         const matrix = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" });
 
         if (!matrix || matrix.length === 0) throw new Error("Il file Excel è vuoto.");
 
-        // Ritardo estetico (3 secondi) per mostrare l'animazione
+        // Ritardo estetico
         setTimeout(() => {
             elaboraDati(matrix, searchCode);
             loadingOverlay.classList.add('hidden');
-        }, 3000); 
+        }, 2000); 
 
     } catch (error) {
         console.error(error);
         loadingOverlay.classList.add('hidden');
-        alert("Errore: " + error.message);
+        alert("Errore di Connessione: " + error.message + "\n\nProva a ricaricare la pagina o cambia rete (Wi-Fi/4G).");
     }
 }
 
@@ -96,19 +125,14 @@ function elaboraDati(matrix, searchCode) {
     let recordTrovato = null;
     let headers = [];
 
-    // --- RICERCA INTELLIGENTE ---
-    // Scorre tutte le righe del file
+    // Ricerca nelle righe
     for (let i = 0; i < matrix.length; i++) {
         const row = matrix[i];
-        
-        // Cerca il codice in ogni cella della riga
         for (let j = 0; j < row.length; j++) {
             let cell = String(row[j]).toUpperCase().replace(/\s+/g, '');
-            
             if (cell === searchCode) {
                 recordTrovato = row;
-                
-                // Cerca di individuare le intestazioni (solitamente riga 0)
+                // Intestazioni
                 if (i > 0) headers = matrix[0]; 
                 else headers = row.map((_, idx) => `Dato ${idx + 1}`);
                 break;
@@ -140,48 +164,36 @@ function elaboraDati(matrix, searchCode) {
         let keyLower = String(key).toLowerCase();
         let valString = String(val);
 
-        // --- RILEVAMENTO IMMAGINE ---
-        // Se la colonna si chiama "Immagine", "Foto", "Link" 
-        // OPPURE se il valore sembra un link di Google Drive
+        // Rileva Immagini/Link
         let isImageColumn = keyLower.includes('immagine') || keyLower.includes('foto') || keyLower.includes('url') || keyLower.includes('link');
         let isDriveLink = valString.includes('drive.google.com') || valString.includes('docs.google.com');
 
         if (isImageColumn || isDriveLink) {
             imageLinkFound = valString;
-            continue; // Non stampare il link nell'elenco testuale
+            continue; 
         }
 
-        // Non ristampare il codice cercato nell'elenco
+        // Non ristampare il codice
         let valClean = valString.toUpperCase().replace(/\s+/g, '');
         if (valClean === searchCode) continue;
 
-        // Stampa il dato
         const div = document.createElement('div');
         div.className = 'data-item';
         div.innerText = `- ${key}: ${val}`;
         listaDati.appendChild(div);
     }
 
-    // --- VISUALIZZAZIONE IMMAGINE ---
+    // Mostra Immagine
     if (imageLinkFound) {
         let imgUrl = imageLinkFound;
-
-        // FIX LINK DRIVE: Se hai incollato il link normale di condivisione foto,
-        // questo codice lo trasforma automaticamente in un link visibile nell'app.
+        // Fix link Google Drive
         if (imgUrl.includes("/d/")) {
             let idMatch = imgUrl.match(/\/d\/(.*?)\//);
-            if (idMatch) {
-                let imgId = idMatch[1];
-                // Trasforma view -> preview (più compatibile)
-                imgUrl = `https://drive.google.com/uc?export=view&id=${imgId}`;
-            }
+            if (idMatch) imgUrl = `https://drive.google.com/uc?export=view&id=${idMatch[1]}`;
         }
-
         imgResult.src = imgUrl;
         imgResult.classList.remove('hidden');
-        
         imgResult.onerror = () => {
-            console.warn("Impossibile caricare immagine:", imgUrl);
             imgResult.classList.add('hidden');
             errImmagine.classList.remove('hidden');
         };
