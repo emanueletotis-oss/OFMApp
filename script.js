@@ -42,7 +42,6 @@ async function scaricaConFallback(googleUrl) {
     let lastError = null;
     for (let proxyUrl of proxies) {
         try {
-            console.log("Tentativo download:", proxyUrl);
             const response = await fetch(proxyUrl, { method: 'GET', cache: 'no-store' });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const arrayBuffer = await response.arrayBuffer();
@@ -50,7 +49,7 @@ async function scaricaConFallback(googleUrl) {
             if (firstByte === 60) throw new Error("Ricevuto HTML invece di Excel");
             return arrayBuffer;
         } catch (e) {
-            console.warn("Proxy fallito:", e);
+            console.warn("Proxy fallito, provo il prossimo:", e);
             lastError = e;
         }
     }
@@ -91,7 +90,6 @@ async function eseguiRicerca() {
 }
 
 function elaboraDati(matrix, searchCode) {
-    // Reset interfaccia
     errCodice.classList.add('hidden');
     errImmagine.classList.add('hidden');
     phRisultati.classList.add('hidden');
@@ -124,7 +122,7 @@ function elaboraDati(matrix, searchCode) {
         return;
     }
 
-    // 2. ELABORA I DATI
+    // 2. MOSTRA DATI
     listaDati.classList.remove('hidden');
     let imageLinkFound = "";
     
@@ -139,58 +137,63 @@ function elaboraDati(matrix, searchCode) {
         let keyLower = key.toLowerCase();
         let valString = String(val);
 
-        // --- STEP A: CONTROLLO IMMAGINE (Priorità Assoluta) ---
-        // Se è l'immagine, la salviamo e saltiamo al prossimo giro (così non viene scritta nel testo)
-        // Controllo: Titolo contiene FOTO/IMMAGINE/LINK oppure il Valore è un link Drive
-        let isImageHeader = keyLower.includes('foto') || keyLower.includes('immagine') || keyLower.includes('link');
+        // RILEVA FOTO (Cerca "FOTO" o Link Drive)
+        let isImageHeader = keyLower.includes('foto') || keyLower.includes('immagine');
         let isDriveLink = valString.includes('drive.google.com') || valString.includes('docs.google.com');
 
         if (isImageHeader || isDriveLink) {
             imageLinkFound = valString;
-            continue; // Stop, passa alla prossima colonna
+            continue; 
         }
 
-        // --- STEP B: FILTRO ASTERISCO ---
-        // Se il titolo NON inizia con *, lo ignoriamo (nascondiamo "altri", "fuffa")
+        // FILTRO ASTERISCO (*)
         if (!key.startsWith('*')) {
-            continue; // Stop, nascondi questa colonna
+            continue; 
         }
 
-        // --- STEP C: PULIZIA ESTETICA ---
-        // Togliamo l'asterisco per la visualizzazione ("*Pezzi" -> "Pezzi")
         let displayKey = key.replace('*', '').trim();
-
-        // Evitiamo di riscrivere il codice cercato
         let valClean = valString.toUpperCase().replace(/\s+/g, '');
         if (valClean === searchCode) continue;
 
-        // --- STEP D: STAMPA A VIDEO ---
         const div = document.createElement('div');
         div.className = 'data-item';
         div.innerText = `- ${displayKey}: ${val}`;
         listaDati.appendChild(div);
     }
 
-    // 3. VISUALIZZA IMMAGINE
+    // 3. CARICA IMMAGINE (CORRETTO)
     if (imageLinkFound) {
         let imgUrl = imageLinkFound;
         
-        // Fix Link Google Drive
+        // Estrazione ID precisa per link Google Drive
+        let driveId = null;
+
         if (imgUrl.includes("/d/")) {
-            let idMatch = imgUrl.match(/\/d\/(.*?)\//);
-            if (idMatch) {
-                let imgId = idMatch[1];
-                imgUrl = `https://drive.google.com/uc?export=view&id=${imgId}`;
+            // Formato: .../d/1c5DF5q-KvhG4JevQhMSHqJeYzz2_wwDx/view...
+            let parts = imgUrl.split('/d/');
+            if (parts.length > 1) {
+                driveId = parts[1].split('/')[0];
             }
+        } else if (imgUrl.includes("id=")) {
+            // Formato: ...?id=1c5DF5q...
+            driveId = imgUrl.split('id=')[1].split('&')[0];
         }
 
-        console.log("Carico immagine:", imgUrl);
+        if (driveId) {
+            // Costruisce il link diretto ufficiale
+            imgUrl = `https://drive.google.com/uc?export=view&id=${driveId}`;
+            
+            // TRUCCO: Imposta 'no-referrer' per evitare che Google blocchi l'immagine
+            imgResult.referrerPolicy = "no-referrer";
+        }
+
+        console.log("URL Immagine generato:", imgUrl);
 
         imgResult.src = imgUrl;
         imgResult.classList.remove('hidden');
         
-        imgResult.onerror = () => {
-            console.warn("Impossibile caricare:", imgUrl);
+        imgResult.onerror = function() {
+            console.error("Errore caricamento immagine (Forse permessi privati?):", imgUrl);
             imgResult.classList.add('hidden');
             errImmagine.classList.remove('hidden');
         };
