@@ -1,6 +1,6 @@
 // --- CONFIGURAZIONE ---
 
-// Il tuo link di condivisione (Lo lasciamo così com'è)
+// IL TUO LINK (Non toccarlo, lo script lo gestisce in automatico)
 const USER_LINK = "https://1drv.ms/x/c/ac1a912c65f087d9/IQSCrL3EW_MNQJi_FLvY8KNJAXXS-7KsHuornWAqYgAoNnE";
 
 // --- ELEMENTI DOM ---
@@ -31,33 +31,23 @@ function resetApp() {
     imgResult.src = "";
 }
 
-// Funzione magica: Converte il link di condivisione in un link API diretto
-function generateOneDriveApiUrl(shareUrl) {
-    // 1. Codifica il link in Base64
-    let base64Value = btoa(shareUrl);
-    // 2. Rendi la stringa sicura per l'URL (sostituisci caratteri speciali)
-    base64Value = base64Value.replace(/\//g, '_').replace(/\+/g, '-');
-    // 3. Rimuovi i simboli '=' alla fine
-    base64Value = base64Value.replace(/=+$/, '');
-    // 4. Costruisci l'URL dell'API di OneDrive
-    return "https://api.onedrive.com/v1.0/shares/u!" + base64Value + "/root/content";
-}
-
-async function tryFetch(proxyUrl) {
+// Funzione helper per tentare il download
+async function tryFetch(url, proxyName) {
     try {
-        console.log("Tentativo con:", proxyUrl);
-        const response = await fetch(proxyUrl, { method: 'GET', cache: 'no-store' });
-        if (!response.ok) throw new Error("HTTP " + response.status);
+        console.log(`Tentativo con ${proxyName}:`, url);
+        const response = await fetch(url, { method: 'GET', cache: 'no-store' });
+        
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         
         const arrayBuffer = await response.arrayBuffer();
         
-        // Controllo se è ancora HTML (vuol dire che il proxy ha fallito il redirect)
+        // Verifica se abbiamo scaricato HTML (errore) invece di un file binario
         const firstByte = new Uint8Array(arrayBuffer)[0];
-        if (firstByte === 60) throw new Error("Ricevuto HTML invece di Excel"); 
+        if (firstByte === 60) throw new Error("Ricevuto HTML (pagina web) invece del file Excel"); 
         
         return arrayBuffer;
     } catch (e) {
-        console.warn("Proxy fallito:", e);
+        console.warn(`${proxyName} fallito:`, e.message);
         return null;
     }
 }
@@ -70,44 +60,59 @@ async function eseguiRicerca() {
     loadingOverlay.classList.remove('hidden');
 
     try {
-        // 1. Genera il link API ufficiale
-        const apiUrl = generateOneDriveApiUrl(USER_LINK);
-        
-        // 2. Usa un proxy per chiamare l'API (necessario per scaricare file su web)
-        // Usiamo allorigins che segue bene i reindirizzamenti dell'API
-        let excelData = null;
-        
-        const proxyUrl = "https://api.allorigins.win/raw?url=" + encodeURIComponent(apiUrl) + "&rand=" + new Date().getTime();
-        
-        excelData = await tryFetch(proxyUrl);
+        // 1. TRASFORMAZIONE CHIRURGICA DEL LINK
+        // Trasformiamo: https://1drv.ms/x/c/... -> https://1drv.ms/download/c/...
+        // Questo è il metodo più sicuro per i nuovi link "Streamline" di OneDrive.
+        let directLink = USER_LINK.replace('/x/', '/download/');
+        directLink = directLink.split('?')[0]; // Rimuove parametri sporchi
 
+        let excelData = null;
+        const timestamp = new Date().getTime();
+
+        // --- STRATEGIA A CASCATA (3 Tentativi) ---
+
+        // TENTATIVO 1: CodeTabs (Molto affidabile per file Excel)
         if (!excelData) {
-            // Backup: prova con corsproxy se il primo fallisce
-            const proxy2 = "https://corsproxy.io/?" + encodeURIComponent(apiUrl) + "&rand=" + new Date().getTime();
-            excelData = await tryFetch(proxy2);
+            const url1 = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(directLink)}&t=${timestamp}`;
+            excelData = await tryFetch(url1, "CodeTabs");
         }
 
-        if (!excelData) throw new Error("Impossibile contattare OneDrive. Verifica la connessione.");
+        // TENTATIVO 2: CorsProxy.io (Veloce, ma a volte bloccato su mobile)
+        if (!excelData) {
+            const url2 = `https://corsproxy.io/?${encodeURIComponent(directLink)}&t=${timestamp}`;
+            excelData = await tryFetch(url2, "CorsProxy");
+        }
 
-        // 3. Elaborazione File
+        // TENTATIVO 3: AllOrigins (Lento ma spesso passa ovunque)
+        if (!excelData) {
+            const url3 = `https://api.allorigins.win/raw?url=${encodeURIComponent(directLink)}&t=${timestamp}`;
+            excelData = await tryFetch(url3, "AllOrigins");
+        }
+
+        // Se tutti falliscono
+        if (!excelData) {
+            throw new Error("Tutti i tentativi di connessione sono falliti. Il firewall della rete mobile potrebbe bloccare i download.");
+        }
+
+        // 2. ELABORAZIONE FILE
         const workbook = XLSX.read(excelData, { type: 'array' });
         
-        if (!workbook.SheetNames.length) throw new Error("File Excel non valido.");
+        if (!workbook.SheetNames.length) throw new Error("File Excel vuoto o illeggibile.");
         
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
         const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
 
-        // Ritardo estetico
+        // Ritardo estetico per l'animazione
         setTimeout(() => {
             elaboraDati(jsonData, searchCode);
             loadingOverlay.classList.add('hidden');
         }, 3500); 
 
     } catch (error) {
-        console.error("ERRORE:", error);
+        console.error("ERRORE CRITICO:", error);
         loadingOverlay.classList.add('hidden');
-        alert("Errore di caricamento: " + error.message + "\n\nAssicurati che il file Excel non sia vuoto o protetto da password.");
+        alert("Errore: " + error.message + "\n\nProva a disattivare il Wi-Fi e usare solo dati, o viceversa.");
     }
 }
 
@@ -179,6 +184,7 @@ function elaboraDati(data, code) {
     }
 }
 
+// Event Listeners
 btnPlay.addEventListener('click', eseguiRicerca);
 btnReset.addEventListener('click', resetApp);
 inputCodice.addEventListener('keypress', (e) => {
