@@ -1,6 +1,6 @@
 // --- CONFIGURAZIONE ---
 
-// ID del tuo file Google Drive
+// ID del file Google Drive (estratto dal tuo link)
 const FILE_ID = "1MUxjFGP4l3tHTckFkW1DA5QaUJwex4xx";
 
 // --- ELEMENTI DOM ---
@@ -35,6 +35,7 @@ function resetApp() {
 async function scaricaConFallback(googleUrl) {
     const timestamp = new Date().getTime();
     
+    // Proxy multipli per garantire il download anche con 4G
     const proxies = [
         `https://corsproxy.io/?${encodeURIComponent(googleUrl)}&t=${timestamp}`,
         `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(googleUrl)}&t=${timestamp}`,
@@ -52,6 +53,7 @@ async function scaricaConFallback(googleUrl) {
             
             const arrayBuffer = await response.arrayBuffer();
             
+            // Controllo anti-pagina-web
             const firstByte = new Uint8Array(arrayBuffer)[0];
             if (firstByte === 60) throw new Error("Ricevuto HTML invece di Excel");
             
@@ -61,7 +63,7 @@ async function scaricaConFallback(googleUrl) {
             lastError = e;
         }
     }
-    throw lastError || new Error("Impossibile scaricare il file Excel.");
+    throw lastError || new Error("Impossibile scaricare il file Excel. Controlla la connessione.");
 }
 
 async function eseguiRicerca() {
@@ -89,7 +91,7 @@ async function eseguiRicerca() {
         setTimeout(() => {
             elaboraDati(matrix, searchCode);
             loadingOverlay.classList.add('hidden');
-        }, 2000); 
+        }, 1500); 
 
     } catch (error) {
         console.error(error);
@@ -137,6 +139,10 @@ function elaboraDati(matrix, searchCode) {
     listaDati.classList.remove('hidden');
     let imageLinkFound = "";
     
+    // Controlliamo se l'utente sta usando il filtro asterisco (*)
+    // Se almeno una colonna ha *, attiveremo la modalità "Solo Asterischi"
+    const usaFiltroAsterisco = headers.some(h => String(h).trim().startsWith('*'));
+
     const maxLen = Math.max(headers.length, recordTrovato.length);
 
     for (let k = 0; k < maxLen; k++) {
@@ -148,30 +154,26 @@ function elaboraDati(matrix, searchCode) {
         let keyLower = key.toLowerCase();
         let valString = String(val);
 
-        // --- GESTIONE FOTO ---
-        // Se la colonna si chiama "Foto", "Immagine" o contiene un link Drive
-        let isImageCol = keyLower.includes('foto') || keyLower.includes('immagine') || keyLower.includes('link');
-        let isDriveLink = valString.includes('drive.google.com') || valString.includes('docs.google.com');
+        // --- RILEVAMENTO IMMAGINE ---
+        // Se la colonna si chiama "FOTO" o contiene un link, è un'immagine
+        let isImageHeader = keyLower.includes('foto') || keyLower.includes('immagine') || keyLower.includes('link');
+        let isUrlContent = valString.includes('drive.google.com') || valString.includes('docs.google.com');
 
-        if (isImageCol || isDriveLink) {
+        if (isImageHeader || isUrlContent) {
             imageLinkFound = valString;
-            continue; // Non scrivere il link come testo, usalo per l'immagine
+            continue; // Non scriverla come testo
         }
 
-        // --- FILTRO ASTERISCO (*) ---
-        // Se vuoi nascondere le colonne "altro", "fuffa", ecc.
-        // Nel file Excel devi mettere un * davanti ai titoli che vuoi vedere (es: *Pezzi totali)
-        // Se la colonna NON ha l'asterisco, la saltiamo.
-        if (!key.startsWith('*')) {
-            // Nota: Se non hai messo gli asterischi nel file Excel, 
-            // commenta le tre righe qui sotto per vedere tutto.
-             continue; 
+        // --- FILTRO ASTERISCO ---
+        // Se nel file Excel ci sono colonne con *, mostriamo SOLO quelle.
+        if (usaFiltroAsterisco && !key.startsWith('*')) {
+            continue; // Nascondi colonne senza * (es. "fuffa")
         }
 
         // Pulisce il nome per la visualizzazione (toglie l'asterisco)
         let displayKey = key.replace('*', '').trim();
 
-        // Non mostrare il codice stesso
+        // Non mostrare il codice cercato nell'elenco
         let valClean = valString.toUpperCase().replace(/\s+/g, '');
         if (valClean === searchCode) continue;
 
@@ -185,9 +187,7 @@ function elaboraDati(matrix, searchCode) {
     if (imageLinkFound) {
         let imgUrl = imageLinkFound;
         
-        // Converte il link di condivisione Drive in link diretto per immagine
-        // Da: https://drive.google.com/file/d/XXX/view...
-        // A:  https://drive.google.com/uc?export=view&id=XXX
+        // Fix automatico link Google Drive (trasforma 'view' in link diretto)
         if (imgUrl.includes("/d/")) {
             let idMatch = imgUrl.match(/\/d\/(.*?)\//);
             if (idMatch) {
@@ -200,7 +200,6 @@ function elaboraDati(matrix, searchCode) {
         imgResult.classList.remove('hidden');
         
         imgResult.onerror = () => {
-            console.warn("Errore caricamento immagine");
             imgResult.classList.add('hidden');
             errImmagine.classList.remove('hidden');
         };
