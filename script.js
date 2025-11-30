@@ -1,6 +1,6 @@
 // --- CONFIGURAZIONE ---
 
-// ID del file Google Drive (estratto dal tuo link)
+// ID del tuo file Google Drive
 const FILE_ID = "1MUxjFGP4l3tHTckFkW1DA5QaUJwex4xx";
 
 // --- ELEMENTI DOM ---
@@ -31,49 +31,37 @@ function resetApp() {
     imgResult.src = "";
 }
 
-// Funzione che tenta di scaricare usando diversi proxy in sequenza
+// Funzione "Carro Armato" per scaricare il file (3 livelli di sicurezza)
 async function scaricaConFallback(googleUrl) {
     const timestamp = new Date().getTime();
     
-    // Lista di "Ponti" (Proxy) da provare in ordine
     const proxies = [
-        // 1. CorsProxy.io (Veloce e stabile)
         `https://corsproxy.io/?${encodeURIComponent(googleUrl)}&t=${timestamp}`,
-        // 2. CodeTabs (Ottimo per i redirect)
         `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(googleUrl)}&t=${timestamp}`,
-        // 3. AllOrigins (Backup finale)
         `https://api.allorigins.win/raw?url=${encodeURIComponent(googleUrl)}&t=${timestamp}`
     ];
 
     let lastError = null;
 
-    // Prova i proxy uno alla volta
     for (let proxyUrl of proxies) {
         try {
-            console.log("Tentativo download con:", proxyUrl);
+            console.log("Download tentativo:", proxyUrl);
             const response = await fetch(proxyUrl, { method: 'GET', cache: 'no-store' });
             
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             
             const arrayBuffer = await response.arrayBuffer();
             
-            // Verifica che non sia una pagina di errore HTML
             const firstByte = new Uint8Array(arrayBuffer)[0];
-            if (firstByte === 60) { // 60 = '<'
-                throw new Error("Ricevuto HTML invece di Excel");
-            }
+            if (firstByte === 60) throw new Error("Ricevuto HTML invece di Excel");
             
-            return arrayBuffer; // Successo! Usciamo dal ciclo e restituiamo il file
-            
+            return arrayBuffer;
         } catch (e) {
-            console.warn("Proxy fallito, provo il prossimo...", e);
+            console.warn("Proxy fallito:", e);
             lastError = e;
-            // Continua col prossimo proxy nel ciclo
         }
     }
-    
-    // Se siamo qui, tutti i proxy hanno fallito
-    throw lastError || new Error("Tutti i tentativi di connessione sono falliti.");
+    throw lastError || new Error("Impossibile scaricare il file Excel.");
 }
 
 async function eseguiRicerca() {
@@ -84,25 +72,20 @@ async function eseguiRicerca() {
     loadingOverlay.classList.remove('hidden');
 
     try {
-        // Costruiamo il link diretto per l'export in Excel da Google Drive
         const exportUrl = `https://docs.google.com/spreadsheets/d/${FILE_ID}/export?format=xlsx`;
-
-        // Avviamo il download con la strategia "Carro Armato" (prova più strade)
         const arrayBuffer = await scaricaConFallback(exportUrl);
 
-        if (!arrayBuffer) throw new Error("Impossibile scaricare il file.");
+        if (!arrayBuffer) throw new Error("Download fallito.");
 
-        // LETTURA EXCEL
         const workbook = XLSX.read(arrayBuffer, { type: 'array' });
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
         
-        // Converte in matrice dati
+        // Converte in matrice (array di array)
         const matrix = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" });
 
-        if (!matrix || matrix.length === 0) throw new Error("Il file Excel è vuoto.");
+        if (!matrix || matrix.length === 0) throw new Error("File Excel vuoto.");
 
-        // Ritardo estetico
         setTimeout(() => {
             elaboraDati(matrix, searchCode);
             loadingOverlay.classList.add('hidden');
@@ -111,11 +94,12 @@ async function eseguiRicerca() {
     } catch (error) {
         console.error(error);
         loadingOverlay.classList.add('hidden');
-        alert("Errore di Connessione: " + error.message + "\n\nProva a ricaricare la pagina o cambia rete (Wi-Fi/4G).");
+        alert("Errore: " + error.message);
     }
 }
 
 function elaboraDati(matrix, searchCode) {
+    // Reset interfaccia
     errCodice.classList.add('hidden');
     errImmagine.classList.add('hidden');
     phRisultati.classList.add('hidden');
@@ -125,14 +109,14 @@ function elaboraDati(matrix, searchCode) {
     let recordTrovato = null;
     let headers = [];
 
-    // Ricerca nelle righe
+    // 1. CERCA IL CODICE NELLE RIGHE
     for (let i = 0; i < matrix.length; i++) {
         const row = matrix[i];
         for (let j = 0; j < row.length; j++) {
             let cell = String(row[j]).toUpperCase().replace(/\s+/g, '');
             if (cell === searchCode) {
                 recordTrovato = row;
-                // Intestazioni
+                // Intestazioni: usa la prima riga del file (indice 0)
                 if (i > 0) headers = matrix[0]; 
                 else headers = row.map((_, idx) => `Dato ${idx + 1}`);
                 break;
@@ -141,7 +125,6 @@ function elaboraDati(matrix, searchCode) {
         if (recordTrovato) break;
     }
 
-    // Se non trovato
     if (!recordTrovato) {
         listaDati.classList.add('hidden');
         errCodice.classList.remove('hidden');
@@ -150,50 +133,74 @@ function elaboraDati(matrix, searchCode) {
         return;
     }
 
-    // Se trovato
+    // 2. MOSTRA I DATI
     listaDati.classList.remove('hidden');
     let imageLinkFound = "";
+    
     const maxLen = Math.max(headers.length, recordTrovato.length);
 
     for (let k = 0; k < maxLen; k++) {
-        let key = headers[k] || `Colonna ${k+1}`;
+        let key = String(headers[k] || `Colonna ${k+1}`).trim();
         let val = recordTrovato[k];
 
         if (!val || String(val).trim() === "") continue;
 
-        let keyLower = String(key).toLowerCase();
+        let keyLower = key.toLowerCase();
         let valString = String(val);
 
-        // Rileva Immagini/Link
-        let isImageColumn = keyLower.includes('immagine') || keyLower.includes('foto') || keyLower.includes('url') || keyLower.includes('link');
+        // --- GESTIONE FOTO ---
+        // Se la colonna si chiama "Foto", "Immagine" o contiene un link Drive
+        let isImageCol = keyLower.includes('foto') || keyLower.includes('immagine') || keyLower.includes('link');
         let isDriveLink = valString.includes('drive.google.com') || valString.includes('docs.google.com');
 
-        if (isImageColumn || isDriveLink) {
+        if (isImageCol || isDriveLink) {
             imageLinkFound = valString;
-            continue; 
+            continue; // Non scrivere il link come testo, usalo per l'immagine
         }
 
-        // Non ristampare il codice
+        // --- FILTRO ASTERISCO (*) ---
+        // Se vuoi nascondere le colonne "altro", "fuffa", ecc.
+        // Nel file Excel devi mettere un * davanti ai titoli che vuoi vedere (es: *Pezzi totali)
+        // Se la colonna NON ha l'asterisco, la saltiamo.
+        if (!key.startsWith('*')) {
+            // Nota: Se non hai messo gli asterischi nel file Excel, 
+            // commenta le tre righe qui sotto per vedere tutto.
+             continue; 
+        }
+
+        // Pulisce il nome per la visualizzazione (toglie l'asterisco)
+        let displayKey = key.replace('*', '').trim();
+
+        // Non mostrare il codice stesso
         let valClean = valString.toUpperCase().replace(/\s+/g, '');
         if (valClean === searchCode) continue;
 
         const div = document.createElement('div');
         div.className = 'data-item';
-        div.innerText = `- ${key}: ${val}`;
+        div.innerText = `- ${displayKey}: ${val}`;
         listaDati.appendChild(div);
     }
 
-    // Mostra Immagine
+    // 3. CARICA IMMAGINE NEL RIQUADRO
     if (imageLinkFound) {
         let imgUrl = imageLinkFound;
-        // Fix link Google Drive
+        
+        // Converte il link di condivisione Drive in link diretto per immagine
+        // Da: https://drive.google.com/file/d/XXX/view...
+        // A:  https://drive.google.com/uc?export=view&id=XXX
         if (imgUrl.includes("/d/")) {
             let idMatch = imgUrl.match(/\/d\/(.*?)\//);
-            if (idMatch) imgUrl = `https://drive.google.com/uc?export=view&id=${idMatch[1]}`;
+            if (idMatch) {
+                let imgId = idMatch[1];
+                imgUrl = `https://drive.google.com/uc?export=view&id=${imgId}`;
+            }
         }
+
         imgResult.src = imgUrl;
         imgResult.classList.remove('hidden');
+        
         imgResult.onerror = () => {
+            console.warn("Errore caricamento immagine");
             imgResult.classList.add('hidden');
             errImmagine.classList.remove('hidden');
         };
