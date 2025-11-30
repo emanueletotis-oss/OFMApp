@@ -1,11 +1,8 @@
 // --- CONFIGURAZIONE ---
 
-// Link originale di OneDrive
-const ONEDRIVE_LINK = "https://1drv.ms/x/c/ac1a912c65f087d9/IQSCrL3EW_MNQJi_FLvY8KNJAXXS-7KsHuornWAqYgAoNnE?download=1";
-
-// NUOVO PROXY: Usiamo 'allorigins' che gestisce meglio i redirect di OneDrive
-// Aggiungiamo un timestamp per evitare che il browser usi la cache vecchia
-const EXCEL_URL = "https://api.allorigins.win/raw?url=" + encodeURIComponent(ONEDRIVE_LINK);
+// 1. IL TUO LINK ESATTO (Preso dal tuo messaggio)
+// Il codice sotto lo correggerà automaticamente per il download.
+const USER_LINK = "https://1drv.ms/x/c/ac1a912c65f087d9/IQSCrL3EW_MNQJi_FLvY8KNJAXXS-7KsHuornWAqYgAoNnE";
 
 // --- ELEMENTI DOM ---
 const inputCodice = document.getElementById('input-codice');
@@ -40,54 +37,55 @@ async function eseguiRicerca() {
     if (!rawCode) return; 
 
     const searchCode = rawCode.toUpperCase(); 
-
     loadingOverlay.classList.remove('hidden');
 
     try {
-        // Aggiungiamo &timestamp alla fine del proxy url per forzare il refresh
-        const finalUrl = EXCEL_URL + "&timestamp=" + new Date().getTime();
+        // --- TRUCCO PER IL NUOVO ONEDRIVE ---
+        // I nuovi link hanno /x/ che apre il visualizzatore web (HTML).
+        // Noi cambiamo /x/ con /download/ per forzare il file grezzo.
+        let downloadUrl = USER_LINK.replace('/x/', '/download/');
         
-        console.log("Tentativo download da:", finalUrl); // Per debug
+        // Puliamo eventuali parametri extra che potrebbero dare fastidio
+        downloadUrl = downloadUrl.split('?')[0];
+
+        // Usiamo corsproxy.io che gestisce bene i file binari
+        const proxyUrl = "https://corsproxy.io/?" + encodeURIComponent(downloadUrl);
+        
+        // Aggiungiamo timestamp per evitare la cache del browser
+        const finalUrl = proxyUrl + "&t=" + new Date().getTime();
+
+        console.log("Scaricando da:", finalUrl); // Per debug in console
 
         const response = await fetch(finalUrl);
         
-        if (!response.ok) {
-            throw new Error(`Errore HTTP: ${response.status}`);
-        }
+        if (!response.ok) throw new Error("Errore scaricamento: " + response.status);
 
         const arrayBuffer = await response.arrayBuffer();
 
-        // CONTROLLO DI SICUREZZA
-        // A volte OneDrive restituisce una pagina HTML di errore invece del file Excel.
-        // Se il file inizia con "<", è probabile che sia HTML e non un file XLSX.
+        // CONTROLLO DI SICUREZZA:
+        // Se il primo byte è '<', significa che abbiamo scaricato una pagina web HTML (errore) 
+        // invece del file Excel (binario).
         const firstByte = new Uint8Array(arrayBuffer)[0];
-        if (firstByte === 60) { // 60 è il codice ASCII per '<'
-            throw new Error("OneDrive ha restituito una pagina Web invece del file Excel. Link scaduto o bloccato.");
+        if (firstByte === 60) { 
+            throw new Error("Il link non permette il download diretto. Verifica che il file non sia protetto da password.");
         }
 
-        // Lettura Excel
+        // Lettura del file Excel
         const workbook = XLSX.read(arrayBuffer, { type: 'array' });
-        const sheetName = workbook.SheetNames[0]; // Prende il primo foglio
+        const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
-        
-        // Converte in JSON
         const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
 
-        if (jsonData.length === 0) {
-            throw new Error("Il file Excel sembra vuoto o non leggibile.");
-        }
-
-        // Ritardo per animazione
+        // Ritardo estetico (3.5 secondi)
         setTimeout(() => {
             elaboraDati(jsonData, searchCode);
             loadingOverlay.classList.add('hidden');
         }, 3500); 
 
     } catch (error) {
-        console.error("Dettaglio Errore:", error);
+        console.error("Errore:", error);
         loadingOverlay.classList.add('hidden');
-        // Mostriamo l'errore specifico nel popup
-        alert("Errore tecnico: " + error.message + "\n\nControlla che il link OneDrive sia ancora valido e pubblico.");
+        alert("Errore tecnico: " + error.message + "\n\nAssicurati che il file Excel su OneDrive non sia stato spostato o rinominato.");
     }
 }
 
@@ -100,13 +98,12 @@ function elaboraDati(data, code) {
 
     let recordTrovato = null;
 
-    // Cerca la riga
     for (let row of data) {
-        // Cerca colonna 'Codice' o usa la prima colonna disponibile
         let rowCode = "";
+        // Cerca colonna codice
         if (row['Codice']) rowCode = row['Codice'];
         else if (row['codice']) rowCode = row['codice'];
-        else rowCode = Object.values(row)[0]; 
+        else rowCode = Object.values(row)[0]; // Fallback prima colonna
         
         if (String(rowCode).toUpperCase() === code) {
             recordTrovato = row;
@@ -114,7 +111,6 @@ function elaboraDati(data, code) {
         }
     }
 
-    // Se non trovato
     if (!recordTrovato) {
         listaDati.classList.add('hidden');
         errCodice.classList.remove('hidden');
@@ -123,7 +119,6 @@ function elaboraDati(data, code) {
         return;
     }
 
-    // Se trovato
     listaDati.classList.remove('hidden');
 
     const keys = Object.keys(recordTrovato);
@@ -133,7 +128,7 @@ function elaboraDati(data, code) {
         const val = recordTrovato[key];
         const keyLower = key.toLowerCase();
 
-        // Cerca link immagine nascosto
+        // Cerca URL immagine nascosto
         if (keyLower.includes('immagine') || keyLower.includes('link') || keyLower.includes('foto') || keyLower.includes('url')) {
             imageLinkFound = val; 
             return;
@@ -150,8 +145,8 @@ function elaboraDati(data, code) {
 
     // Gestione Immagine
     if (imageLinkFound && String(imageLinkFound).trim() !== "") {
-        // Fix link drive
         let imgUrl = String(imageLinkFound);
+        // Fix per link drive view -> preview
         if (imgUrl.includes("drive.google.com")) {
              imgUrl = imgUrl.replace("/view", "/preview").replace("open?id=", "uc?id=");
         }
