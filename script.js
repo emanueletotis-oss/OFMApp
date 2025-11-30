@@ -1,7 +1,8 @@
 // --- CONFIGURAZIONE ---
 
-// IL TUO LINK ORIGINALE (Lo lasciamo così com'è, lo script lo trasformerà)
-const USER_LINK = "https://1drv.ms/x/c/ac1a912c65f087d9/IQSCrL3EW_MNQJi_FLvY8KNJAXXS-7KsHuornWAqYgAoNnE";
+// 1. INCOLLA QUI IL LINK LUNGHISSIMO (Quello preso dalla barra degli indirizzi dopo aver aperto il file)
+// Deve iniziare con https://onedrive.live.com/....
+const LONG_LINK = "https://onedrive.live.com/edit?cid=ac1a912c65f087d9&id=AC1A912C65F087D9!sc4bdac82f35b400d98bf14bbd8f0a349&resid=AC1A912C65F087D9!sc4bdac82f35b400d98bf14bbd8f0a349&ithint=file%2Cxlsx&embed=1&migratedtospo=true&redeem=aHR0cHM6Ly8xZHJ2Lm1zL3gvYy9hYzFhOTEyYzY1ZjA4N2Q5L0lRU0NyTDNFV19NTlFKaV9GTHZZOEtOSkFYWFMtN0tzSHVvcm5XQXFZZ0FvTm5F&wdo=2";
 
 // --- ELEMENTI DOM ---
 const inputCodice = document.getElementById('input-codice');
@@ -31,19 +32,7 @@ function resetApp() {
     imgResult.src = "";
 }
 
-// QUESTA È LA FUNZIONE MAGICA
-// Trasforma il link "1drv.ms" in un link API ufficiale che forza il download
-function creaLinkUfficialeOneDrive(url) {
-    // 1. Codifica il link in Base64
-    let encoded = btoa(url);
-    // 2. Rendi la stringa sicura per URL (sostituisci caratteri speciali)
-    encoded = encoded.replace(/\//g, '_').replace(/\+/g, '-');
-    // 3. Rimuovi i simboli '=' finali
-    encoded = encoded.replace(/=+$/, '');
-    // 4. Crea l'URL che punta direttamente al file
-    return "https://api.onedrive.com/v1.0/shares/u!" + encoded + "/root/content";
-}
-
+// Funzione che scarica e controlla se è un vero Excel
 async function tryFetch(url, proxyName) {
     try {
         const response = await fetch(url, { method: 'GET', cache: 'no-store' });
@@ -51,13 +40,13 @@ async function tryFetch(url, proxyName) {
         
         const arrayBuffer = await response.arrayBuffer();
         
-        // Verifica se è un file vero (se inizia con '<' è HTML, quindi errore)
+        // Controllo primo byte: 60 = '<' (HTML, errore), 80 = 'P' (Excel/Zip, corretto)
         const firstByte = new Uint8Array(arrayBuffer)[0];
-        if (firstByte === 60) return null; 
+        if (firstByte === 60) return null; // È HTML, quindi fallito
         
         return arrayBuffer;
     } catch (e) {
-        console.warn(`${proxyName} fallito:`, e.message);
+        console.warn(`${proxyName} errore:`, e.message);
         return null;
     }
 }
@@ -66,41 +55,53 @@ async function eseguiRicerca() {
     const rawCode = inputCodice.value.trim();
     if (!rawCode) return; 
 
-    // Pulisce il codice (toglie spazi e mette maiuscolo)
+    // Controllo se l'utente ha incollato il link
+    if (LONG_LINK.includes("INCOLLA_QUI")) {
+        alert("Errore: Devi aprire il file script.js e incollare il link lungo di OneDrive!");
+        return;
+    }
+
     const searchCode = rawCode.replace(/\s+/g, '').toUpperCase(); 
     loadingOverlay.classList.remove('hidden');
 
     try {
-        // 1. Generiamo il link API Microsoft
-        const apiLink = creaLinkUfficialeOneDrive(USER_LINK);
+        // --- TRASFORMAZIONE LINK ---
+        // Prende il link lungo (edit o view) e lo forza a 'download'
+        // Esempio: onedrive.live.com/edit.aspx?... -> onedrive.live.com/download?...
+        let downloadUrl = LONG_LINK.replace('/edit.aspx', '/download').replace('/view.aspx', '/download');
+        
+        // Se non ha sostituito nulla (magari il link è diverso), proviamo ad aggiungere ?download=1
+        if (!downloadUrl.includes('/download')) {
+             if (downloadUrl.includes('?')) downloadUrl += "&download=1";
+             else downloadUrl += "?download=1";
+        }
+
         const timestamp = new Date().getTime();
         let excelData = null;
 
-        // 2. Tentativi di download tramite Proxy (necessario per aggirare i blocchi)
+        // --- STRATEGIA PROXY (AllOrigins è il più robusto per OneDrive) ---
+        // Usiamo solo questo perché è quello che gestisce meglio i redirect di onedrive.live.com
+        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(downloadUrl)}&t=${timestamp}`;
         
-        // Tentativo A: CorsProxy (Veloce e gestisce bene i redirect API)
+        excelData = await tryFetch(proxyUrl, "AllOrigins");
+
+        // Se fallisce, proviamo CorsProxy come backup
         if (!excelData) {
-            const urlA = `https://corsproxy.io/?${encodeURIComponent(apiLink)}&t=${timestamp}`;
-            excelData = await tryFetch(urlA, "CorsProxy");
+            const proxy2 = `https://corsproxy.io/?${encodeURIComponent(downloadUrl)}&t=${timestamp}`;
+            excelData = await tryFetch(proxy2, "CorsProxy");
         }
 
-        // Tentativo B: CodeTabs (Molto affidabile)
-        if (!excelData) {
-            const urlB = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(apiLink)}&t=${timestamp}`;
-            excelData = await tryFetch(urlB, "CodeTabs");
-        }
+        if (!excelData) throw new Error("Link non valido o blocco connessione. Assicurati di usare il Link Lungo dalla barra degli indirizzi.");
 
-        if (!excelData) throw new Error("Impossibile scaricare il file Excel. Riprova tra poco.");
-
-        // 3. Lettura del file
+        // LETTURA EXCEL
         const workbook = XLSX.read(excelData, { type: 'array' });
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
         
-        // Converte in matrice di dati
+        // Matrice dati
         const matrix = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" });
 
-        if (!matrix || matrix.length === 0) throw new Error("Il file Excel scaricato è vuoto.");
+        if (!matrix || matrix.length === 0) throw new Error("Il file Excel sembra vuoto.");
 
         // Ritardo estetico
         setTimeout(() => {
@@ -110,12 +111,11 @@ async function eseguiRicerca() {
 
     } catch (error) {
         loadingOverlay.classList.add('hidden');
-        alert("Errore tecnico: " + error.message);
+        alert("Errore: " + error.message);
     }
 }
 
 function elaboraDati(matrix, searchCode) {
-    // Reset interfaccia
     errCodice.classList.add('hidden');
     errImmagine.classList.add('hidden');
     phRisultati.classList.add('hidden');
@@ -125,17 +125,14 @@ function elaboraDati(matrix, searchCode) {
     let recordTrovato = null;
     let headers = [];
 
-    // Cerchiamo il codice in ogni riga
+    // Cerca il codice in tutta la matrice
     for (let i = 0; i < matrix.length; i++) {
         const row = matrix[i];
-        
         for (let j = 0; j < row.length; j++) {
-            // Pulisce la cella da spazi e formattazione
             let cell = String(row[j]).toUpperCase().replace(/\s+/g, '');
-            
             if (cell === searchCode) {
                 recordTrovato = row;
-                // Cerca di capire dove sono le intestazioni (di solito riga 0)
+                // Intestazioni: prova la riga 0, o header generici
                 if (i > 0) headers = matrix[0]; 
                 else headers = row.map((_, idx) => `Dato ${idx + 1}`);
                 break;
@@ -152,11 +149,11 @@ function elaboraDati(matrix, searchCode) {
         return;
     }
 
-    // Trovato! Mostriamo i dati
+    // Mostra dati
     listaDati.classList.remove('hidden');
     let imageLinkFound = "";
-
     const maxLen = Math.max(headers.length, recordTrovato.length);
+
     for (let k = 0; k < maxLen; k++) {
         let key = headers[k] || `Colonna ${k+1}`;
         let val = recordTrovato[k];
@@ -165,13 +162,13 @@ function elaboraDati(matrix, searchCode) {
 
         let keyLower = String(key).toLowerCase();
         
-        // Cerca colonna immagine
+        // Cerca Immagine
         if (keyLower.includes('immagine') || keyLower.includes('link') || keyLower.includes('foto') || keyLower.includes('url')) {
             imageLinkFound = val;
             continue;
         }
 
-        // Non mostrare il codice stesso nell'elenco
+        // Non mostrare il codice stesso
         let valClean = String(val).toUpperCase().replace(/\s+/g, '');
         if (valClean === searchCode) continue;
 
@@ -181,22 +178,16 @@ function elaboraDati(matrix, searchCode) {
         listaDati.appendChild(div);
     }
 
-    // Gestione Immagine
+    // Visualizza Immagine
     if (imageLinkFound) {
         let imgUrl = String(imageLinkFound);
-        // Correzione automatica link drive
         if (imgUrl.includes("drive.google.com")) {
              imgUrl = imgUrl.replace("/view", "/preview").replace("open?id=", "uc?id=");
         }
         imgResult.src = imgUrl;
         imgResult.classList.remove('hidden');
-        
-        imgResult.onerror = () => {
-            imgResult.classList.add('hidden');
-            errImmagine.classList.remove('hidden');
-        };
+        imgResult.onerror = () => { imgResult.classList.add('hidden'); errImmagine.classList.remove('hidden'); };
     } else {
-        imgResult.classList.add('hidden');
         errImmagine.classList.remove('hidden');
     }
 }
