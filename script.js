@@ -29,6 +29,7 @@ function resetApp() {
     imgResult.classList.add('hidden');
     errImmagine.classList.add('hidden');
     imgResult.src = "";
+    imgResult.onerror = null; // Reset gestore errori
 }
 
 async function scaricaConFallback(googleUrl) {
@@ -42,6 +43,7 @@ async function scaricaConFallback(googleUrl) {
     let lastError = null;
     for (let proxyUrl of proxies) {
         try {
+            console.log("Tentativo download:", proxyUrl);
             const response = await fetch(proxyUrl, { method: 'GET', cache: 'no-store' });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const arrayBuffer = await response.arrayBuffer();
@@ -49,7 +51,7 @@ async function scaricaConFallback(googleUrl) {
             if (firstByte === 60) throw new Error("Ricevuto HTML invece di Excel");
             return arrayBuffer;
         } catch (e) {
-            console.warn("Proxy fallito, provo il prossimo:", e);
+            console.warn("Proxy fallito:", e);
             lastError = e;
         }
     }
@@ -90,6 +92,7 @@ async function eseguiRicerca() {
 }
 
 function elaboraDati(matrix, searchCode) {
+    // Reset interfaccia
     errCodice.classList.add('hidden');
     errImmagine.classList.add('hidden');
     phRisultati.classList.add('hidden');
@@ -122,7 +125,7 @@ function elaboraDati(matrix, searchCode) {
         return;
     }
 
-    // 2. MOSTRA DATI
+    // 2. ELABORA I DATI
     listaDati.classList.remove('hidden');
     let imageLinkFound = "";
     
@@ -137,7 +140,7 @@ function elaboraDati(matrix, searchCode) {
         let keyLower = key.toLowerCase();
         let valString = String(val);
 
-        // RILEVA FOTO (Cerca "FOTO" o Link Drive)
+        // --- STEP A: CATTURA IMMAGINE ---
         let isImageHeader = keyLower.includes('foto') || keyLower.includes('immagine');
         let isDriveLink = valString.includes('drive.google.com') || valString.includes('docs.google.com');
 
@@ -146,57 +149,65 @@ function elaboraDati(matrix, searchCode) {
             continue; 
         }
 
-        // FILTRO ASTERISCO (*)
+        // --- STEP B: FILTRO ASTERISCO RIGIDO ---
+        // Se non inizia con *, SALTA e vai al prossimo giro.
         if (!key.startsWith('*')) {
             continue; 
         }
 
+        // --- STEP C: PULIZIA TESTO ---
         let displayKey = key.replace('*', '').trim();
         let valClean = valString.toUpperCase().replace(/\s+/g, '');
         if (valClean === searchCode) continue;
 
         const div = document.createElement('div');
         div.className = 'data-item';
+        // Il trattino estetico viene aggiunto qui
         div.innerText = `- ${displayKey}: ${val}`;
         listaDati.appendChild(div);
     }
 
-    // 3. CARICA IMMAGINE (CORRETTO)
+    // 3. CARICA IMMAGINE (DOPPIO METODO)
     if (imageLinkFound) {
         let imgUrl = imageLinkFound;
-        
-        // Estrazione ID precisa per link Google Drive
         let driveId = null;
 
         if (imgUrl.includes("/d/")) {
-            // Formato: .../d/1c5DF5q-KvhG4JevQhMSHqJeYzz2_wwDx/view...
-            let parts = imgUrl.split('/d/');
-            if (parts.length > 1) {
-                driveId = parts[1].split('/')[0];
-            }
+            let idMatch = imgUrl.match(/\/d\/(.*?)\//);
+            if (idMatch) driveId = idMatch[1];
         } else if (imgUrl.includes("id=")) {
-            // Formato: ...?id=1c5DF5q...
             driveId = imgUrl.split('id=')[1].split('&')[0];
         }
 
         if (driveId) {
-            // Costruisce il link diretto ufficiale
+            // Metodo 1: Google User Content (con no-referrer)
             imgUrl = `https://drive.google.com/uc?export=view&id=${driveId}`;
             
-            // TRUCCO: Imposta 'no-referrer' per evitare che Google blocchi l'immagine
-            imgResult.referrerPolicy = "no-referrer";
+            // Metodo 2 (Fallback): LH3 (Server immagini Google)
+            // Se il metodo 1 fallisce, questo scatta automaticamente
+            imgResult.onerror = () => {
+                console.warn("Metodo 1 fallito. Provo Metodo 2...");
+                imgResult.onerror = () => { // Se fallisce anche il 2, mostra errore
+                     imgResult.classList.add('hidden');
+                     errImmagine.classList.remove('hidden');
+                };
+                imgResult.src = `https://lh3.googleusercontent.com/d/${driveId}`;
+            };
+        } else {
+             // Fallback per link non-Drive (se mai ne avessi)
+             imgResult.onerror = () => {
+                imgResult.classList.add('hidden');
+                errImmagine.classList.remove('hidden');
+             };
         }
 
-        console.log("URL Immagine generato:", imgUrl);
+        console.log("Carico immagine:", imgUrl);
 
+        // Nasconde il referrer per bypassare i blocchi base
+        imgResult.referrerPolicy = "no-referrer";
         imgResult.src = imgUrl;
         imgResult.classList.remove('hidden');
         
-        imgResult.onerror = function() {
-            console.error("Errore caricamento immagine (Forse permessi privati?):", imgUrl);
-            imgResult.classList.add('hidden');
-            errImmagine.classList.remove('hidden');
-        };
     } else {
         errImmagine.classList.remove('hidden');
     }
