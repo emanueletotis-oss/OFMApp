@@ -1,7 +1,6 @@
 // --- CONFIGURAZIONE ---
 
-// 1. IL TUO LINK ORIGINALE (Preso dal tuo messaggio)
-// Non lo modifichiamo, lo usiamo così com'è.
+// Il tuo link di condivisione (Lo lasciamo così com'è)
 const USER_LINK = "https://1drv.ms/x/c/ac1a912c65f087d9/IQSCrL3EW_MNQJi_FLvY8KNJAXXS-7KsHuornWAqYgAoNnE";
 
 // --- ELEMENTI DOM ---
@@ -32,27 +31,34 @@ function resetApp() {
     imgResult.src = "";
 }
 
-// Funzione di supporto per tentare il download
+// Funzione magica: Converte il link di condivisione in un link API diretto
+function generateOneDriveApiUrl(shareUrl) {
+    // 1. Codifica il link in Base64
+    let base64Value = btoa(shareUrl);
+    // 2. Rendi la stringa sicura per l'URL (sostituisci caratteri speciali)
+    base64Value = base64Value.replace(/\//g, '_').replace(/\+/g, '-');
+    // 3. Rimuovi i simboli '=' alla fine
+    base64Value = base64Value.replace(/=+$/, '');
+    // 4. Costruisci l'URL dell'API di OneDrive
+    return "https://api.onedrive.com/v1.0/shares/u!" + base64Value + "/root/content";
+}
+
 async function tryFetch(proxyUrl) {
     try {
-        console.log("Tentativo download da:", proxyUrl);
-        const response = await fetch(proxyUrl, {
-            method: 'GET',
-            cache: 'no-store' // IMPORTANTE: Forza l'iPhone a scaricare sempre il file nuovo
-        });
-        
-        if (!response.ok) throw new Error("Status: " + response.status);
+        console.log("Tentativo con:", proxyUrl);
+        const response = await fetch(proxyUrl, { method: 'GET', cache: 'no-store' });
+        if (!response.ok) throw new Error("HTTP " + response.status);
         
         const arrayBuffer = await response.arrayBuffer();
         
-        // Controllo se è HTML (Errore) invece di Excel
+        // Controllo se è ancora HTML (vuol dire che il proxy ha fallito il redirect)
         const firstByte = new Uint8Array(arrayBuffer)[0];
-        if (firstByte === 60) throw new Error("Ricevuto HTML invece di Excel"); // 60 = '<'
+        if (firstByte === 60) throw new Error("Ricevuto HTML invece di Excel"); 
         
         return arrayBuffer;
     } catch (e) {
-        console.warn("Tentativo fallito:", e);
-        return null; // Ritorna null se fallisce
+        console.warn("Proxy fallito:", e);
+        return null;
     }
 }
 
@@ -64,46 +70,35 @@ async function eseguiRicerca() {
     loadingOverlay.classList.remove('hidden');
 
     try {
-        // PREPARAZIONE LINK CORRETTA
-        // Invece di sostituire /x/, aggiungiamo semplicemente ?download=1 alla fine.
-        // Questo dice a OneDrive di scaricare il file invece di aprirlo.
-        let downloadLink = USER_LINK;
+        // 1. Genera il link API ufficiale
+        const apiUrl = generateOneDriveApiUrl(USER_LINK);
         
-        // Se c'è già un '?', usiamo '&', altrimenti '?'
-        if (downloadLink.includes('?')) {
-            downloadLink += "&download=1";
-        } else {
-            downloadLink += "?download=1";
-        }
-
-        // STRATEGIA PROXY (AllOrigins è il più stabile per il mobile)
+        // 2. Usa un proxy per chiamare l'API (necessario per scaricare file su web)
+        // Usiamo allorigins che segue bene i reindirizzamenti dell'API
         let excelData = null;
-
-        // Costruiamo l'URL del proxy
-        // Aggiungiamo un timestamp casuale per evitare che l'iPhone usi la cache vecchia
-        const proxyUrl = "https://api.allorigins.win/raw?url=" + encodeURIComponent(downloadLink) + "&rand=" + new Date().getTime();
+        
+        const proxyUrl = "https://api.allorigins.win/raw?url=" + encodeURIComponent(apiUrl) + "&rand=" + new Date().getTime();
         
         excelData = await tryFetch(proxyUrl);
 
-        // Se fallisce, proviamo il secondo proxy (backup)
         if (!excelData) {
-             const proxy2 = "https://corsproxy.io/?" + encodeURIComponent(downloadLink) + "&rand=" + new Date().getTime();
-             excelData = await tryFetch(proxy2);
+            // Backup: prova con corsproxy se il primo fallisce
+            const proxy2 = "https://corsproxy.io/?" + encodeURIComponent(apiUrl) + "&rand=" + new Date().getTime();
+            excelData = await tryFetch(proxy2);
         }
 
-        if (!excelData) {
-            throw new Error("Impossibile scaricare il file. Controlla la connessione internet.");
-        }
+        if (!excelData) throw new Error("Impossibile contattare OneDrive. Verifica la connessione.");
 
-        // ELABORAZIONE FILE
+        // 3. Elaborazione File
         const workbook = XLSX.read(excelData, { type: 'array' });
+        
+        if (!workbook.SheetNames.length) throw new Error("File Excel non valido.");
+        
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
         const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
 
-        if (jsonData.length === 0) throw new Error("Il file Excel è vuoto.");
-
-        // Ritardo estetico richiesto
+        // Ritardo estetico
         setTimeout(() => {
             elaboraDati(jsonData, searchCode);
             loadingOverlay.classList.add('hidden');
@@ -112,7 +107,7 @@ async function eseguiRicerca() {
     } catch (error) {
         console.error("ERRORE:", error);
         loadingOverlay.classList.add('hidden');
-        alert("Errore tecnico: " + error.message + "\n\nSe il problema persiste, prova a chiudere e riaprire la pagina.");
+        alert("Errore di caricamento: " + error.message + "\n\nAssicurati che il file Excel non sia vuoto o protetto da password.");
     }
 }
 
