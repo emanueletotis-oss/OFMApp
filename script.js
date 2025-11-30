@@ -1,6 +1,7 @@
 // --- CONFIGURAZIONE ---
 
-// Il tuo link 1drv.ms (che trasformeremo automaticamente in link di download)
+// 1. IL TUO LINK ORIGINALE (Preso dal tuo messaggio)
+// Non lo modifichiamo, lo usiamo così com'è.
 const USER_LINK = "https://1drv.ms/x/c/ac1a912c65f087d9/IQSCrL3EW_MNQJi_FLvY8KNJAXXS-7KsHuornWAqYgAoNnE";
 
 // --- ELEMENTI DOM ---
@@ -31,13 +32,13 @@ function resetApp() {
     imgResult.src = "";
 }
 
-// Funzione di supporto per tentare il download da diversi proxy
+// Funzione di supporto per tentare il download
 async function tryFetch(proxyUrl) {
     try {
         console.log("Tentativo download da:", proxyUrl);
         const response = await fetch(proxyUrl, {
             method: 'GET',
-            cache: 'no-store' // IMPORTANTE: Forza l'iPhone a non usare la cache
+            cache: 'no-store' // IMPORTANTE: Forza l'iPhone a scaricare sempre il file nuovo
         });
         
         if (!response.ok) throw new Error("Status: " + response.status);
@@ -50,7 +51,7 @@ async function tryFetch(proxyUrl) {
         
         return arrayBuffer;
     } catch (e) {
-        console.warn("Proxy fallito:", e);
+        console.warn("Tentativo fallito:", e);
         return null; // Ritorna null se fallisce
     }
 }
@@ -63,29 +64,35 @@ async function eseguiRicerca() {
     loadingOverlay.classList.remove('hidden');
 
     try {
-        // PREPARAZIONE LINK
-        // 1. Modifica il link per puntare al download
-        let downloadLink = USER_LINK.replace('/x/', '/download/');
-        // Rimuove parametri extra
-        downloadLink = downloadLink.split('?')[0]; 
-
-        // STRATEGIA DOPPIO PROXY
-        let excelData = null;
-
-        // TENTATIVO 1: Usa 'AllOrigins' (spesso funziona meglio su mobile)
-        const proxy1 = "https://api.allorigins.win/raw?url=" + encodeURIComponent(downloadLink) + "&timestamp=" + new Date().getTime();
-        excelData = await tryFetch(proxy1);
-
-        // TENTATIVO 2: Se il primo fallisce, usa 'CorsProxy'
-        if (!excelData) {
-            console.log("Primo proxy fallito, provo il secondo...");
-            const proxy2 = "https://corsproxy.io/?" + encodeURIComponent(downloadLink) + "&timestamp=" + new Date().getTime();
-            excelData = await tryFetch(proxy2);
+        // PREPARAZIONE LINK CORRETTA
+        // Invece di sostituire /x/, aggiungiamo semplicemente ?download=1 alla fine.
+        // Questo dice a OneDrive di scaricare il file invece di aprirlo.
+        let downloadLink = USER_LINK;
+        
+        // Se c'è già un '?', usiamo '&', altrimenti '?'
+        if (downloadLink.includes('?')) {
+            downloadLink += "&download=1";
+        } else {
+            downloadLink += "?download=1";
         }
 
-        // Se entrambi falliscono
+        // STRATEGIA PROXY (AllOrigins è il più stabile per il mobile)
+        let excelData = null;
+
+        // Costruiamo l'URL del proxy
+        // Aggiungiamo un timestamp casuale per evitare che l'iPhone usi la cache vecchia
+        const proxyUrl = "https://api.allorigins.win/raw?url=" + encodeURIComponent(downloadLink) + "&rand=" + new Date().getTime();
+        
+        excelData = await tryFetch(proxyUrl);
+
+        // Se fallisce, proviamo il secondo proxy (backup)
         if (!excelData) {
-            throw new Error("Connessione instabile. Impossibile scaricare il file da OneDrive con la rete attuale.");
+             const proxy2 = "https://corsproxy.io/?" + encodeURIComponent(downloadLink) + "&rand=" + new Date().getTime();
+             excelData = await tryFetch(proxy2);
+        }
+
+        if (!excelData) {
+            throw new Error("Impossibile scaricare il file. Controlla la connessione internet.");
         }
 
         // ELABORAZIONE FILE
@@ -96,16 +103,16 @@ async function eseguiRicerca() {
 
         if (jsonData.length === 0) throw new Error("Il file Excel è vuoto.");
 
-        // Ritardo estetico
+        // Ritardo estetico richiesto
         setTimeout(() => {
             elaboraDati(jsonData, searchCode);
             loadingOverlay.classList.add('hidden');
         }, 3500); 
 
     } catch (error) {
-        console.error("ERRORE FATALE:", error);
+        console.error("ERRORE:", error);
         loadingOverlay.classList.add('hidden');
-        alert(error.message + "\n\nSuggerimento: Prova a disattivare e riattivare il Wi-Fi/Dati.");
+        alert("Errore tecnico: " + error.message + "\n\nSe il problema persiste, prova a chiudere e riaprire la pagina.");
     }
 }
 
