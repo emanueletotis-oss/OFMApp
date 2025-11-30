@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ricerca Codici App</title>
+    <link rel="icon" href="icon.jpg" type="image/jpeg">
+    <link rel="stylesheet" href="style.css">
+    <!-- FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- SheetJS: Libreria per leggere Excel -->
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+
+    <div class="app-container">
+        
+        <!-- SEZIONE CODICE -->
+        <div class="label-title">Codice</div>
+        <input type="text" id="input-codice" placeholder="Inserisci codice" autocomplete="off">
+        
+        <!-- PULSANTI -->
+        <div class="button-group">
+            <button id="btn-play" aria-label="Cerca">
+                <i class="fas fa-play"></i>
+            </button>
+            <button id="btn-reset" aria-label="Reset">
+                <img src="icon_cestino.png" alt="Reset" class="custom-icon">
+            </button>
+        </div>
+
+        <!-- ANIMAZIONE (Overlay) -->
+        <div id="loading-overlay" class="hidden">
+            <div class="pulsing-circle"></div>
+            <p>Elaborazione in corso...</p>
+        </div>
+
+        <!-- SEZIONE RISULTATI -->
+        <div class="label-title">Risultati</div>
+        <div id="box-risultati" class="content-box">
+            <div id="placeholder-risultati" class="placeholder-text">Elenco risultati</div>
+            
+            <div id="lista-dati" class="hidden"></div>
+
+            <div id="error-codice" class="error-msg hidden">
+                <i class="fas fa-exclamation-triangle"></i>
+                <div>Codice errato!</div>
+            </div>
+        </div>
+
+        <!-- SEZIONE IMMAGINE -->
+        <div id="box-immagine" class="content-box image-box-container">
+            <div id="placeholder-immagine" class="placeholder-text">immagine</div>
+            
+            <img id="result-image" class="hidden" alt="Immagine prodotto">
+
+            <div id="error-immagine" class="error-msg hidden warning-color">
+                <i class="fas fa-exclamation-triangle"></i>
+                <div>Immagine non disponibile</div>
+            </div>
+        </div>
+
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
